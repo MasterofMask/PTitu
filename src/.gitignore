@@ -1,0 +1,40 @@
+# Entorno virtual
+venv/
+env/
+ENV/
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+
+# Base de datos
+*.db
+*.sqlite3
+data/database.db
+
+# Modelos preentrenados (muy pesados)
+data/models/*
+!data/models/.gitkeep
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Sistema operativo
+.DS_Store
+Thumbs.db
+
+# Logs
+*.log
+
+# Datos de prueba (opcional)
+data/test_photos/
+
+# Archivos temporales
+*.tmp
+*.bak
