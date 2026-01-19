@@ -17,7 +17,7 @@ MIN_IMAGE_RESOLUTION = (640, 480)
 SUPPORTED_FORMATS = ['.jpg', '.jpeg', '.png', '.tiff']
 
 # Clustering facial
-FACE_EMBEDDING_SIZE = 128
+FACE_EMBEDDING_SIZE = 512  # FaceNet genera embeddings de 512 dimensiones
 FACE_CONFIDENCE_THRESHOLD = 0.9
 DBSCAN_EPS = 0.6
 DBSCAN_MIN_SAMPLES = 2
