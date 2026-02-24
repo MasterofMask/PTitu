@@ -48,3 +48,15 @@ LOG_FORMAT = '%(asctime)s - %(name)s - %(levelname)s - %(message)s'
 # Crear directorios si no existen
 DATA_DIR.mkdir(exist_ok=True)
 MODELS_DIR.mkdir(exist_ok=True)
+
+# Reconocimiento de escenas
+SCENE_CATEGORIES = [
+    'playa',
+    'restaurante',
+    'exterior',
+    'interior',
+    'evento_deportivo',
+    'evento_social',
+    'desconocido'
+]
+SCENE_CONFIDENCE_THRESHOLD = 0.55

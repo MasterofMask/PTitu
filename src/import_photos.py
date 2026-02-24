@@ -35,7 +35,7 @@ def import_and_process_folder(folder_path: Path,
     if process_faces:
         print("Inicializando detector de rostros...")
         face_processor = FaceProcessor()
-        print("✓ Detector inicializado\n")
+        print("Detector inicializado\n")
     
     # Buscar archivos de imagen
     image_files = []
