@@ -7,7 +7,7 @@ VGG-16 preentrenada en ImageNet con transfer learning.
 Categorías soportadas (según config.py → SCENE_CATEGORIES):
     - interiores
     - exteriores
-    - paisajes
+    - restaurantes
     - eventos_sociales
     - actividades_deportivas
 
