@@ -38,3 +38,8 @@ data/test_photos/
 # Archivos temporales
 *.tmp
 *.bak
+
+# Archivos del modelo entrenado
+data/dataset/
+data/models/*.pth
+data/models/training_history.json

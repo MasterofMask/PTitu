@@ -67,7 +67,10 @@ class ImportWorker(QThread):
             # Inicializar procesador de escenas
             self.status.emit("Inicializando clasificador de escenas...")
             from src.processors.scene_processor import SceneProcessor
-            scene_processor = SceneProcessor()
+            from src.core.config import MODELS_DIR
+            scene_processor = SceneProcessor(
+                weights_path=MODELS_DIR / 'vgg16_scene_classifier.pth'
+            )
             
             face_processor = None
             if self.process_faces:

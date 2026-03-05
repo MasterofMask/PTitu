@@ -33,7 +33,10 @@ def test_scene_classification():
     try:
         # Crear procesador
         print("\nInicializando clasificador...")
-        processor = SceneProcessor()
+        from src.core.config import MODELS_DIR
+        processor = SceneProcessor(
+            weights_path=MODELS_DIR / 'vgg16_scene_classifier.pth'
+        )
         print("✓ Clasificador inicializado\n")
         
         # Clasificar

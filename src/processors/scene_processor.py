@@ -185,14 +185,11 @@ class SceneProcessor:
                           se usan los pesos de ImageNet directamente.
         """
         # ── Dispositivo ───────────────────────────────────────────────────
-        if device is None:
-            self.device = torch.device(
-                'cuda' if torch.cuda.is_available() else 'cpu'
-            )
-        else:
-            self.device = torch.device(device)
-
-        logger.info(f"SceneProcessor usando dispositivo: {self.device}")
+        try:
+            import torch_directml
+            self.device = torch_directml.device()
+        except ImportError:
+            self.device = torch.device('cpu')
 
         # ── Cargar VGG-16 ─────────────────────────────────────────────────
         try:

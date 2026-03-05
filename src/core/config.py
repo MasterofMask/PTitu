@@ -24,13 +24,13 @@ DBSCAN_MIN_SAMPLES = 2
 
 # Reconocimiento de escenas
 SCENE_CATEGORIES = [
+    'actividades_deportivas',
     'eventos_sociales',
-    'paisajes',
-    'interiores',
     'exteriores',
-    'actividades_deportivas'
+    'interiores',
+    'restaurantes'
 ]
-SCENE_CONFIDENCE_THRESHOLD = 0.7
+SCENE_CONFIDENCE_THRESHOLD = 0.55
 
 # Clustering temporal
 TEMPORAL_MIN_THRESHOLD = 300  # 5 minutos en segundos
