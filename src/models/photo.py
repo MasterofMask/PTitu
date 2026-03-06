@@ -1,7 +1,8 @@
 """
 Modelo de datos para fotografías
 """
-from dataclasses import dataclass
+import hashlib
+from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
 from typing import Optional
@@ -11,7 +12,7 @@ from PIL import Image
 @dataclass
 class Photo:
     """Representa una fotografía en el sistema"""
-    
+
     id: Optional[int] = None
     file_path: str = ""
     file_name: str = ""
@@ -22,61 +23,82 @@ class Photo:
     timestamp: Optional[datetime] = None
     date_added: Optional[datetime] = None
     processed: bool = False
-    
+    file_hash: Optional[str] = None   # ← hash MD5 del contenido binario
+
     @classmethod
     def from_file(cls, file_path: Path) -> 'Photo':
         """
         Crea una instancia de Photo desde un archivo.
-        
+
+        Calcula el hash MD5 del contenido para identificar duplicados
+        independientemente del nombre o ubicación del archivo.
+
         Args:
             file_path: Ruta al archivo de imagen
-            
+
         Returns:
-            Instancia de Photo con datos básicos
+            Instancia de Photo con metadatos básicos y hash
         """
-        stat = file_path.stat()
-        
-        # Obtener dimensiones usando PIL
+        if not file_path.exists():
+            raise FileNotFoundError(f"Archivo no encontrado: {file_path}")
+
+        photo = cls()
+        photo.file_path = str(file_path.resolve())
+        photo.file_name = file_path.name
+        photo.file_size = file_path.stat().st_size
+        photo.format = file_path.suffix.lower()
+
+        # Calcular hash MD5 del contenido binario
+        photo.file_hash = cls._compute_hash(file_path)
+
+        # Obtener dimensiones con PIL
         try:
             with Image.open(file_path) as img:
-                width, height = img.size
+                photo.width, photo.height = img.size
         except Exception:
-            width, height = 0, 0
-        
-        return cls(
-            file_path=str(file_path.absolute()),
-            file_name=file_path.name,
-            file_size=stat.st_size,
-            width=width,
-            height=height,
-            format=file_path.suffix.lower()
-        )
-    
+            photo.width = 0
+            photo.height = 0
+
+        return photo
+
+    @staticmethod
+    def _compute_hash(file_path: Path) -> str:
+        """
+        Calcula el hash MD5 del contenido del archivo.
+
+        Se lee en bloques de 64 KB para no cargar archivos grandes
+        completos en memoria.
+
+        Args:
+            file_path: Ruta al archivo
+
+        Returns:
+            Cadena hexadecimal con el hash MD5
+        """
+        md5 = hashlib.md5()
+        with open(file_path, 'rb') as f:
+            for chunk in iter(lambda: f.read(65536), b''):
+                md5.update(chunk)
+        return md5.hexdigest()
+
     def to_dict(self) -> dict:
-        """Convierte el objeto a diccionario"""
+        """Convierte la fotografía a diccionario para inserción en BD"""
         return {
-            'id': self.id,
-            'file_path': self.file_path,
-            'file_name': self.file_name,
-            'file_size': self.file_size,
-            'width': self.width,
-            'height': self.height,
-            'format': self.format,
-            'timestamp': self.timestamp.isoformat() if self.timestamp else None,
-            'date_added': self.date_added.isoformat() if self.date_added else None,
-            'processed': self.processed
+            'file_path':  self.file_path,
+            'file_name':  self.file_name,
+            'file_size':  self.file_size,
+            'width':      self.width,
+            'height':     self.height,
+            'format':     self.format,
+            'timestamp':  self.timestamp,
+            'file_hash':  self.file_hash,
         }
-    
-    def get_path(self) -> Path:
-        """Retorna la ruta como objeto Path"""
-        return Path(self.file_path)
 
 
 @dataclass
 class PhotoMetadata:
-    """Metadatos EXIF de una fotografía"""
-    
-    id: Optional[int] = None
+    """Metadatos EXIF asociados a una fotografía"""
+
     photo_id: Optional[int] = None
     camera_make: Optional[str] = None
     camera_model: Optional[str] = None
@@ -88,31 +110,3 @@ class PhotoMetadata:
     gps_latitude: Optional[float] = None
     gps_longitude: Optional[float] = None
     gps_altitude: Optional[float] = None
-    
-    def has_gps(self) -> bool:
-        """Verifica si tiene datos GPS válidos"""
-        return (self.gps_latitude is not None and 
-                self.gps_longitude is not None)
-    
-    def get_coordinates(self) -> Optional[tuple]:
-        """Retorna coordenadas GPS como tupla (lat, lon)"""
-        if self.has_gps():
-            return (self.gps_latitude, self.gps_longitude)
-        return None
-    
-    def to_dict(self) -> dict:
-        """Convierte el objeto a diccionario"""
-        return {
-            'id': self.id,
-            'photo_id': self.photo_id,
-            'camera_make': self.camera_make,
-            'camera_model': self.camera_model,
-            'focal_length': self.focal_length,
-            'aperture': self.aperture,
-            'exposure_time': self.exposure_time,
-            'iso': self.iso,
-            'flash': self.flash,
-            'gps_latitude': self.gps_latitude,
-            'gps_longitude': self.gps_longitude,
-            'gps_altitude': self.gps_altitude
-        }

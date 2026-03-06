@@ -1,11 +1,12 @@
 """
 Clustering facial usando DBSCAN.
 
-Agrupa rostros detectados por similitud de embeddings para
-identificar automáticamente personas en colecciones fotográficas.
+Agrupa rostros detectados por similitud de embeddings. Si una persona
+ya fue etiquetada manualmente, sus embeddings se usan como semillas para
+asignar automáticamente rostros nuevos a la misma persona.
 """
 import logging
-from typing import List, Dict, Any, Tuple
+from typing import List, Dict, Any, Tuple, Optional
 import numpy as np
 from sklearn.cluster import DBSCAN
 from sklearn.metrics import silhouette_score
@@ -16,275 +17,232 @@ from src.core.database import DatabaseManager
 
 logger = logging.getLogger(__name__)
 
+# Umbral de similitud coseno para asignar un rostro nuevo a una
+# persona ya etiquetada manualmente (menor = más estricto).
+MANUAL_LABEL_THRESHOLD = 0.45
+
 
 class FaceClustering:
     """
-    Clustering facial basado en DBSCAN.
-    
-    Agrupa embeddings faciales para identificar personas únicas
-    en una colección de fotografías.
+    Clustering facial basado en DBSCAN con soporte de etiquetas manuales.
+
+    Flujo al llamar cluster_from_database():
+      1. Separa rostros ya etiquetados manualmente de los sin etiquetar.
+      2. Calcula el centroide de embeddings por persona etiquetada.
+      3. Para cada rostro sin etiquetar, calcula distancia coseno a cada
+         centroide. Si está dentro del umbral, asigna a esa persona.
+      4. Los rostros restantes pasan por DBSCAN para formar grupos nuevos.
+      5. Los nuevos clusters reciben person_id nuevos (sin nombre).
     """
-    
-    def __init__(self, 
+
+    def __init__(self,
                  eps: float = DBSCAN_EPS,
                  min_samples: int = DBSCAN_MIN_SAMPLES):
-        """
-        Inicializa el clustering facial.
-        
-        Args:
-            eps: Radio máximo de vecindad (distancia coseno)
-            min_samples: Mínimo de muestras para formar un cluster
-        """
         self.eps = eps
         self.min_samples = min_samples
         self.clusterer = None
         self.labels = None
         self.embeddings = None
         self.face_ids = None
-    
-    def cluster_faces(self, 
-                     embeddings: List[np.ndarray],
-                     face_ids: List[int]) -> Dict[int, List[int]]:
+
+    # ----------------------------------------------------------------
+    #  Punto de entrada principal
+    # ----------------------------------------------------------------
+
+    def cluster_from_database(self, db: DatabaseManager) -> Dict[int, List[int]]:
         """
-        Agrupa rostros por similitud de embeddings.
-        
+        Ejecuta clustering completo respetando etiquetas manuales.
+
         Args:
-            embeddings: Lista de embeddings faciales
-            face_ids: Lista de IDs de rostros correspondientes
-            
+            db: Gestor de base de datos
+
         Returns:
             Diccionario {cluster_id: [face_ids]}
         """
-        if len(embeddings) == 0:
-            logger.warning("No hay embeddings para procesar")
+        all_data = db.get_all_face_embeddings()
+        if not all_data:
+            logger.warning("No hay rostros en la base de datos")
             return {}
-        
-        if len(embeddings) != len(face_ids):
-            raise ValueError("Número de embeddings y face_ids no coincide")
-        
-        # Guardar referencias
+
+        # ── 1. Separar etiquetados y sin etiquetar ───────────────────
+        conn = db.connect()
+        labeled_faces = {}    # person_id → [(face_id, embedding)]
+        unlabeled = []        # [(face_id, embedding)]
+
+        for face_id, embedding in all_data:
+            row = conn.execute(
+                "SELECT person_id FROM faces WHERE id = ?", (face_id,)
+            ).fetchone()
+            pid = row['person_id'] if row else None
+
+            if pid is not None:
+                # Verificar que la persona tiene nombre (etiquetada manualmente)
+                person = db.get_person_by_id(pid)
+                if person and person.get('name'):
+                    labeled_faces.setdefault(pid, []).append((face_id, embedding))
+                    continue
+            unlabeled.append((face_id, embedding))
+
+        logger.info(
+            f"Rostros etiquetados: {sum(len(v) for v in labeled_faces.values())}, "
+            f"sin etiquetar: {len(unlabeled)}"
+        )
+
+        # ── 2. Centroides por persona etiquetada ─────────────────────
+        centroids: Dict[int, np.ndarray] = {}
+        for pid, items in labeled_faces.items():
+            embs = np.array([e for _, e in items])
+            centroids[pid] = embs.mean(axis=0)
+
+        # ── 3. Asignar rostros sin etiquetar a personas conocidas ─────
+        still_unlabeled = []
+        assigned_to_known = 0
+
+        for face_id, embedding in unlabeled:
+            best_pid, best_dist = None, float('inf')
+            for pid, centroid in centroids.items():
+                dist = cosine(embedding, centroid)
+                if dist < best_dist:
+                    best_dist = dist
+                    best_pid = pid
+
+            if best_pid is not None and best_dist <= MANUAL_LABEL_THRESHOLD:
+                db.update_face_person(face_id, best_pid)
+                # Actualizar centroide con este embedding nuevo
+                old = centroids[best_pid]
+                n = len(labeled_faces[best_pid]) + assigned_to_known + 1
+                centroids[best_pid] = old + (embedding - old) / n
+                assigned_to_known += 1
+            else:
+                still_unlabeled.append((face_id, embedding))
+
+        logger.info(
+            f"Asignados a personas conocidas: {assigned_to_known}, "
+            f"aún sin etiquetar: {len(still_unlabeled)}"
+        )
+
+        # ── 4. DBSCAN sobre los rostros restantes ─────────────────────
+        clusters: Dict[int, List[int]] = {}
+        if still_unlabeled:
+            face_ids_u = [fid for fid, _ in still_unlabeled]
+            embeddings_u = [emb for _, emb in still_unlabeled]
+            clusters = self.cluster_faces(embeddings_u, face_ids_u)
+            self._update_database(db, clusters)
+
+        return clusters
+
+    # ----------------------------------------------------------------
+    #  DBSCAN puro
+    # ----------------------------------------------------------------
+
+    def cluster_faces(self,
+                      embeddings: List[np.ndarray],
+                      face_ids: List[int]) -> Dict[int, List[int]]:
+        """
+        Agrupa rostros por similitud de embeddings con DBSCAN.
+
+        Args:
+            embeddings: Lista de embeddings faciales
+            face_ids:   IDs correspondientes a cada embedding
+
+        Returns:
+            {cluster_label: [face_ids]}
+        """
+        if not embeddings:
+            return {}
+
         self.embeddings = np.array(embeddings)
         self.face_ids = face_ids
-        
-        logger.info(f"Clustering {len(embeddings)} rostros...")
-        
-        # Aplicar DBSCAN con métrica coseno
+
         self.clusterer = DBSCAN(
             eps=self.eps,
             min_samples=self.min_samples,
             metric='cosine'
         )
-        
         self.labels = self.clusterer.fit_predict(self.embeddings)
-        
-        # Contar clusters
+
         n_clusters = len(set(self.labels)) - (1 if -1 in self.labels else 0)
-        n_noise = list(self.labels).count(-1)
-        
-        logger.info(f"Encontrados {n_clusters} clusters y {n_noise} rostros sin clasificar")
-        
-        # Calcular métrica de calidad si hay suficientes clusters
+        n_noise    = list(self.labels).count(-1)
+        logger.info(f"DBSCAN: {n_clusters} cluster(s), {n_noise} ruido(s)")
+
         if n_clusters > 1 and n_noise < len(self.labels):
             try:
-                score = silhouette_score(
-                    self.embeddings, 
-                    self.labels,
-                    metric='cosine'
-                )
+                score = silhouette_score(self.embeddings, self.labels,
+                                         metric='cosine')
                 logger.info(f"Silhouette score: {score:.3f}")
-            except Exception as e:
-                logger.debug(f"No se pudo calcular silhouette score: {e}")
-        
-        # Organizar resultados
-        clusters = {}
-        for face_id, label in zip(face_ids, self.labels):
-            if label not in clusters:
-                clusters[label] = []
-            clusters[label].append(face_id)
-        
+            except Exception:
+                pass
+
+        clusters: Dict[int, List[int]] = {}
+        for fid, lbl in zip(face_ids, self.labels):
+            clusters.setdefault(lbl, []).append(fid)
         return clusters
-    
-    def cluster_from_database(self, db: DatabaseManager) -> Dict[int, List[int]]:
-        """
-        Ejecuta clustering usando rostros almacenados en base de datos.
-        
-        Args:
-            db: Gestor de base de datos
-            
-        Returns:
-            Diccionario {cluster_id: [face_ids]}
-        """
-        # Obtener embeddings de la base de datos
-        data = db.get_all_face_embeddings()
-        
-        if not data:
-            logger.warning("No hay rostros en la base de datos")
-            return {}
-        
-        face_ids = [item[0] for item in data]
-        embeddings = [item[1] for item in data]
-        
-        # Ejecutar clustering
-        clusters = self.cluster_faces(embeddings, face_ids)
-        
-        # Actualizar base de datos con asignaciones
-        self._update_database(db, clusters)
-        
-        return clusters
-    
-    def _update_database(self, db: DatabaseManager, clusters: Dict[int, List[int]]):
-        """
-        Actualiza la base de datos con las asignaciones de clustering.
-        
-        Args:
-            db: Gestor de base de datos
-            clusters: Diccionario con clusters y rostros
-        """
-        logger.info("Actualizando base de datos con clusters...")
-        
-        for cluster_id, face_ids in clusters.items():
-            # Saltar ruido (cluster_id = -1)
-            if cluster_id == -1:
-                logger.info(f"Saltando {len(face_ids)} rostros sin clasificar")
+
+    # ----------------------------------------------------------------
+    #  Actualización en BD para clusters DBSCAN nuevos
+    # ----------------------------------------------------------------
+
+    def _update_database(self, db: DatabaseManager,
+                         clusters: Dict[int, List[int]]):
+        """Crea personas nuevas (sin nombre) para los clusters DBSCAN."""
+        # Calcular offset para que cluster_id no colisione con los manuales
+        conn = db.connect()
+        row = conn.execute("SELECT MAX(cluster_id) as mx FROM persons").fetchone()
+        offset = int(row['mx'] or 0)
+        if offset < 9000:
+            offset = 9000
+
+        for cluster_label, face_ids in clusters.items():
+            if cluster_label == -1:
+                logger.debug(f"Ruido DBSCAN: {len(face_ids)} rostro(s) sin asignar")
                 continue
-            
-            # Crear o obtener persona para este cluster
-            person_id = db.insert_person(cluster_id=cluster_id)
-            
-            # Asignar rostros a esta persona
-            for face_id in face_ids:
-                db.update_face_person(face_id, person_id)
-            
-            logger.debug(f"Cluster {cluster_id}: {len(face_ids)} rostros → Persona ID {person_id}")
-        
-        logger.info("Base de datos actualizada")
-    
-    def get_cluster_statistics(self) -> Dict[str, Any]:
-        """
-        Obtiene estadísticas del clustering realizado.
-        
-        Returns:
-            Diccionario con estadísticas
-        """
-        if self.labels is None:
-            return {}
-        
-        unique_labels = set(self.labels)
-        n_clusters = len(unique_labels) - (1 if -1 in unique_labels else 0)
-        n_noise = list(self.labels).count(-1)
-        
-        # Tamaño de clusters
-        cluster_sizes = {}
-        for label in unique_labels:
-            if label != -1:
-                cluster_sizes[int(label)] = list(self.labels).count(label)
-        
-        return {
-            'n_clusters': n_clusters,
-            'n_noise': n_noise,
-            'n_total': len(self.labels),
-            'cluster_sizes': cluster_sizes,
-            'parameters': {
-                'eps': self.eps,
-                'min_samples': self.min_samples
-            }
-        }
-    
-    def find_similar_faces(self, 
-                          query_embedding: np.ndarray,
-                          threshold: float = 0.6) -> List[Tuple[int, float]]:
-        """
-        Encuentra rostros similares a un embedding dado.
-        
-        Args:
-            query_embedding: Embedding facial de consulta
-            threshold: Umbral de similitud (0-1, menor es más similar)
-            
-        Returns:
-            Lista de tuplas (face_id, distancia) ordenadas por similitud
-        """
-        if self.embeddings is None or self.face_ids is None:
-            logger.warning("No hay embeddings cargados")
-            return []
-        
-        # Calcular distancias coseno
-        similarities = []
-        for i, embedding in enumerate(self.embeddings):
-            distance = cosine(query_embedding, embedding)
-            if distance <= threshold:
-                similarities.append((self.face_ids[i], distance))
-        
-        # Ordenar por distancia (menor = más similar)
-        similarities.sort(key=lambda x: x[1])
-        
-        return similarities
-    
-    def optimize_parameters(self,
-                           embeddings: List[np.ndarray],
-                           eps_range: Tuple[float, float] = (0.4, 0.8),
-                           eps_steps: int = 5) -> Dict[str, Any]:
-        """
-        Busca los mejores parámetros de DBSCAN para el dataset.
-        
-        Args:
-            embeddings: Lista de embeddings
-            eps_range: Rango de valores eps a probar
-            eps_steps: Número de valores a probar
-            
-        Returns:
-            Diccionario con mejores parámetros y métricas
-        """
-        if len(embeddings) < 10:
-            logger.warning("Dataset muy pequeño para optimización")
-            return {}
-        
-        embeddings_array = np.array(embeddings)
-        best_score = -1
-        best_params = {}
-        
-        eps_values = np.linspace(eps_range[0], eps_range[1], eps_steps)
-        
-        logger.info("Optimizando parámetros de clustering...")
-        
-        for eps in eps_values:
-            clusterer = DBSCAN(
-                eps=eps,
-                min_samples=self.min_samples,
-                metric='cosine'
+
+            new_cluster_id = offset + cluster_label + 1
+            person_id = db.insert_person(cluster_id=new_cluster_id)
+            for fid in face_ids:
+                db.update_face_person(fid, person_id)
+            logger.debug(
+                f"Cluster {cluster_label} → Persona ID {person_id} "
+                f"({len(face_ids)} rostros)"
             )
-            
-            labels = clusterer.fit_predict(embeddings_array)
-            
-            n_clusters = len(set(labels)) - (1 if -1 in labels else 0)
-            n_noise = list(labels).count(-1)
-            
-            # Evaluar solo si hay clusters válidos
-            if n_clusters > 1 and n_noise < len(labels) * 0.5:
-                try:
-                    score = silhouette_score(
-                        embeddings_array,
-                        labels,
-                        metric='cosine'
-                    )
-                    
-                    if score > best_score:
-                        best_score = score
-                        best_params = {
-                            'eps': eps,
-                            'min_samples': self.min_samples,
-                            'n_clusters': n_clusters,
-                            'n_noise': n_noise,
-                            'silhouette_score': score
-                        }
-                
-                except Exception as e:
-                    logger.debug(f"Error calculando score para eps={eps}: {e}")
-                    continue
-        
-        if best_params:
-            logger.info(f"Mejores parámetros encontrados: eps={best_params['eps']:.3f}, "
-                       f"score={best_params['silhouette_score']:.3f}")
-        else:
-            logger.warning("No se encontraron parámetros óptimos")
-        
-        return best_params
+
+    # ----------------------------------------------------------------
+    #  Estadísticas
+    # ----------------------------------------------------------------
+
+    def get_cluster_statistics(self) -> Dict[str, Any]:
+        if self.labels is None:
+            return {'n_clusters': 0, 'n_noise': 0, 'n_total': 0,
+                    'cluster_sizes': {}, 'parameters': {
+                        'eps': self.eps, 'min_samples': self.min_samples}}
+
+        unique = set(self.labels)
+        n_clusters = len(unique) - (1 if -1 in unique else 0)
+        n_noise    = list(self.labels).count(-1)
+
+        sizes = {
+            int(lbl): list(self.labels).count(lbl)
+            for lbl in unique if lbl != -1
+        }
+        return {
+            'n_clusters':   n_clusters,
+            'n_noise':      n_noise,
+            'n_total':      len(self.labels),
+            'cluster_sizes': sizes,
+            'parameters':   {'eps': self.eps, 'min_samples': self.min_samples}
+        }
+
+    # ----------------------------------------------------------------
+    #  Búsqueda de similares
+    # ----------------------------------------------------------------
+
+    def find_similar_faces(self, query_embedding: np.ndarray,
+                           threshold: float = 0.6) -> List[Tuple[int, float]]:
+        if self.embeddings is None or self.face_ids is None:
+            return []
+        results = [
+            (self.face_ids[i], cosine(query_embedding, emb))
+            for i, emb in enumerate(self.embeddings)
+            if cosine(query_embedding, emb) <= threshold
+        ]
+        return sorted(results, key=lambda x: x[1])
