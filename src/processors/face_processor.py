@@ -43,7 +43,10 @@ class FaceProcessor:
             device: 'cuda' para GPU, 'cpu' para CPU, None para auto-detectar
         """
         # Determinar dispositivo
-        if device is None:
+        # Forzar CPU - DirectML solo se usa para entrenamiento
+        self.device = torch.device('cpu')
+        
+        """if device is None:
             self.device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
         else:
             self.device = torch.device(device)
@@ -57,7 +60,8 @@ class FaceProcessor:
         except Exception as e:
             logger.error(f"Error inicializando MTCNN: {e}")
             raise
-        
+       """
+
         # Inicializar FaceNet para embeddings
         try:
             self.facenet = InceptionResnetV1(pretrained='vggface2').eval()

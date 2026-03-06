@@ -263,7 +263,10 @@ def main() -> None:
         print("  Ejecuta: python scripts/prepare_dataset.py")
         sys.exit(1)
 
-    try:
+
+    device = torch.device('cpu')
+    print(f"Dispositivo : cpu")
+    """ try:
         import torch_directml
         device = torch_directml.device()
         print(f"Dispositivo : AMD GPU (DirectML)")
@@ -274,7 +277,7 @@ def main() -> None:
 
     if device.type == 'cpu':
         print("  (Sin GPU — ~40-70 min total para 2 fases)")
-
+    """
     tfms = build_transforms()
     loaders, sizes, class_names = build_dataloaders(tfms)
 

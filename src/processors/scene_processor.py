@@ -185,11 +185,7 @@ class SceneProcessor:
                           se usan los pesos de ImageNet directamente.
         """
         # ── Dispositivo ───────────────────────────────────────────────────
-        try:
-            import torch_directml
-            self.device = torch_directml.device()
-        except ImportError:
-            self.device = torch.device('cpu')
+        self.device = torch.device('cpu')
 
         # ── Cargar VGG-16 ─────────────────────────────────────────────────
         try:
@@ -200,7 +196,7 @@ class SceneProcessor:
 
             if weights_path is not None and weights_path.exists():
                 state_dict = torch.load(
-                    weights_path, map_location=self.device
+                    weights_path, map_location=torch.device('cpu')
                 )
                 self.model.load_state_dict(state_dict)
                 logger.info(f"Pesos fine-tuned cargados desde: {weights_path}")
