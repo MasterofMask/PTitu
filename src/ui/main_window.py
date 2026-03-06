@@ -15,6 +15,7 @@ from PyQt5.QtWidgets import (
 from PyQt5.QtCore import Qt, QThread, pyqtSignal, QSize
 from PyQt5.QtGui import QIcon, QPixmap
 
+
 from src.core.database import DatabaseManager
 from src.ui.styles import MAIN_STYLE
 
@@ -225,6 +226,13 @@ class MainWindow(QMainWindow):
         btn_cluster.setStyleSheet("font-size: 14pt;")
         btn_cluster.clicked.connect(self.cluster_faces)
         btn_layout.addWidget(btn_cluster, 1, 1)
+
+        #Botón: Exportar
+        btn_export = QPushButton("📂 Exportar por Escena")
+        btn_export.setMinimumHeight(80)
+        btn_export.setStyleSheet("font-size: 14pt;")
+        btn_export.clicked.connect(self.export_by_scene)
+        btn_layout.addWidget(btn_export, 2, 0, 1, 2)
         
         layout.addLayout(btn_layout)
         layout.addStretch()
@@ -242,14 +250,12 @@ class MainWindow(QMainWindow):
         
         # Filtro por escena
         filter_layout.addWidget(QLabel("Filtrar por escena:"))
-        self.scene_filter = QComboBox()
         self.scene_filter.addItem("Todas", None)
-        self.scene_filter.addItem("🏖️ Playa", "playa")
-        self.scene_filter.addItem("🍽️ Restaurante", "restaurante")
-        self.scene_filter.addItem("🌳 Exterior", "exterior")
-        self.scene_filter.addItem("🏠 Interior", "interior")
-        self.scene_filter.addItem("⚽ Evento Deportivo", "evento_deportivo")
-        self.scene_filter.addItem("🎉 Evento Social", "evento_social")
+        self.scene_filter.addItem("Interiores", "interiores")
+        self.scene_filter.addItem("Exteriores", "exteriores")
+        self.scene_filter.addItem("Restaurantes", "restaurantes")
+        self.scene_filter.addItem("Eventos Sociales", "eventos_sociales")
+        self.scene_filter.addItem("Actividades Deportivas", "actividades_deportivas")
         self.scene_filter.currentIndexChanged.connect(self.filter_gallery_by_scene)
         filter_layout.addWidget(self.scene_filter)
         
@@ -847,155 +853,102 @@ class MainWindow(QMainWindow):
 
 # ==================== MÉTODOS DE EXPORTACIÓN ====================
 
+    def export_by_scene(self):
+        """Abre diálogo para seleccionar destino y exporta fotos por escena."""
+        from PyQt5.QtWidgets import QFileDialog, QMessageBox
+
+        # Verificar que hay fotos procesadas
+        stats = self.db.get_statistics()
+        scenes = stats.get('scenes_distribution', {})
+        total_classified = sum(scenes.values())
+
+        if total_classified == 0:
+            QMessageBox.warning(
+                self,
+                "Sin fotos clasificadas",
+                "No hay fotos clasificadas para exportar."
+            )
+            return
+
+        # Rest of your method code here...
+
+    def _start_export(self, dest_path):
+        """Inicia el worker de exportación."""
+        from src.exporters.export_worker import ExportWorker
+
+        self.setEnabled(False)
+        self.progress_bar.setVisible(True)
+        self.progress_bar.setValue(0)
+        self.status_bar.showMessage("Iniciando exportación...")
+
+        self.export_worker = ExportWorker(dest_path)
+        self.export_worker.progress.connect(self._on_export_progress)
+        self.export_worker.finished.connect(self._on_export_finished)
+        self.export_worker.error.connect(self._on_export_error)
+        self.export_worker.start()
 
 
-"""
-1. En los imports al inicio del archivo agrega:
-       from src.exporters.export_worker import ExportWorker
+    def _on_export_progress(self, pct: int, message: str):
+        """Actualiza barra de progreso durante la exportación."""
+        self.progress_bar.setValue(pct)
+        self.status_bar.showMessage(message)
 
-2. En create_home_tab() (donde están los botones principales),
-   agrega el botón de exportación dentro del btn_layout:
 
-       btn_export = QPushButton("Exportar por Escena")
-       btn_export.setMinimumHeight(80)
-       btn_export.setStyleSheet("font-size: 14pt;")
-       btn_export.clicked.connect(self.export_by_scene)
-       btn_layout.addWidget(btn_export, 2, 0)   # ajusta fila/columna según tu layout
+    def _on_export_finished(self, counts: dict):
+        """Muestra resultado al terminar la exportación."""
+        from PyQt5.QtWidgets import QMessageBox
 
-3. Pega los métodos de abajo dentro de la clase MainWindow.
+        self.progress_bar.setVisible(False)
+        self.setEnabled(True)
 
-4. En create_gallery_tab(), actualiza el filtro de escenas para
-   que coincida con las categorías actuales (reemplaza los addItem
-   con las líneas del método update_scene_filter que aparece abajo).
-"""
-
-def export_by_scene(self):
-    """Abre diálogo para seleccionar destino y exporta fotos por escena."""
-    from PyQt5.QtWidgets import QFileDialog, QMessageBox
-
-    # Verificar que hay fotos procesadas
-    stats = self.db.get_statistics()
-    scenes = stats.get('scenes_distribution', {})
-    total_classified = sum(scenes.values())
-
-    if total_classified == 0:
-        QMessageBox.warning(
-            self,
-            "Sin fotos clasificadas",
-            "No hay fotografías con escena clasificada.\n\n"
-            "Importa y procesa fotos primero desde la pestaña principal.",
+        total = sum(counts.values())
+        lines = "\n".join(
+            f"  • {folder}: {n} fotos"
+            for folder, n in sorted(counts.items())
+            if n > 0
         )
-        return
 
-    # Seleccionar carpeta destino
-    dest = QFileDialog.getExistingDirectory(
-        self,
-        "Seleccionar carpeta destino para exportación",
-        str(Path.home()),
-    )
-    if not dest:
-        return
-
-    dest_path = Path(dest)
-
-    # Mostrar resumen antes de exportar
-    summary_lines = "\n".join(
-        f"  • {cat}: {n} fotos" for cat, n in scenes.items()
-    )
-    reply = QMessageBox.question(
-        self,
-        "Confirmar exportación",
-        f"Se exportarán {total_classified} fotos hacia:\n"
-        f"{dest_path / 'por_escena'}\n\n"
-        f"Distribución:\n{summary_lines}\n\n"
-        "Las fotos originales NO se moverán ni eliminarán.\n"
-        "¿Continuar?",
-        QMessageBox.Yes | QMessageBox.No,
-    )
-    if reply != QMessageBox.Yes:
-        return
-
-    # Iniciar exportación en hilo separado
-    self._start_export(dest_path)
+        QMessageBox.information(
+            self,
+            "Exportación completada",
+            f"✓ {total} fotos exportadas exitosamente.\n\n"
+            f"Distribución:\n{lines}\n\n"
+            f"Carpeta: {self.export_worker.dest_dir / 'por_escena'}",
+        )
+        self.status_bar.showMessage(f"Exportación completada: {total} fotos")
 
 
-def _start_export(self, dest_path):
-    """Inicia el worker de exportación."""
-    from src.exporters.export_worker import ExportWorker
+    def _on_export_error(self, message: str):
+        """Muestra error si falla la exportación."""
+        from PyQt5.QtWidgets import QMessageBox
 
-    self.setEnabled(False)
-    self.progress_bar.setVisible(True)
-    self.progress_bar.setValue(0)
-    self.status_bar.showMessage("Iniciando exportación...")
+        self.progress_bar.setVisible(False)
+        self.setEnabled(True)
 
-    self.export_worker = ExportWorker(dest_path)
-    self.export_worker.progress.connect(self._on_export_progress)
-    self.export_worker.finished.connect(self._on_export_finished)
-    self.export_worker.error.connect(self._on_export_error)
-    self.export_worker.start()
-
-
-def _on_export_progress(self, pct: int, message: str):
-    """Actualiza barra de progreso durante la exportación."""
-    self.progress_bar.setValue(pct)
-    self.status_bar.showMessage(message)
+        QMessageBox.critical(
+            self,
+            "Error de exportación",
+            f"Ocurrió un error durante la exportación:\n\n{message}",
+        )
+        self.status_bar.showMessage("Error en exportación")
 
 
-def _on_export_finished(self, counts: dict):
-    """Muestra resultado al terminar la exportación."""
-    from PyQt5.QtWidgets import QMessageBox
+    def update_scene_filter(self):
+        """
+        Actualiza el combo de filtro de escenas en la galería con las
+        categorías actuales del proyecto.
 
-    self.progress_bar.setVisible(False)
-    self.setEnabled(True)
-
-    total = sum(counts.values())
-    lines = "\n".join(
-        f"  • {folder}: {n} fotos"
-        for folder, n in sorted(counts.items())
-        if n > 0
-    )
-
-    QMessageBox.information(
-        self,
-        "Exportación completada",
-        f"✓ {total} fotos exportadas exitosamente.\n\n"
-        f"Distribución:\n{lines}\n\n"
-        f"Carpeta: {self.export_worker.dest_dir / 'por_escena'}",
-    )
-    self.status_bar.showMessage(f"Exportación completada: {total} fotos")
-
-
-def _on_export_error(self, message: str):
-    """Muestra error si falla la exportación."""
-    from PyQt5.QtWidgets import QMessageBox
-
-    self.progress_bar.setVisible(False)
-    self.setEnabled(True)
-
-    QMessageBox.critical(
-        self,
-        "Error de exportación",
-        f"Ocurrió un error durante la exportación:\n\n{message}",
-    )
-    self.status_bar.showMessage("Error en exportación")
-
-
-def update_scene_filter(self):
-    """
-    Actualiza el combo de filtro de escenas en la galería con las
-    categorías actuales del proyecto.
-
-    Reemplaza el bloque de addItem existente en create_gallery_tab()
-    con esta lista:
-    """
-    # Reemplaza los addItem del scene_filter con estos:
-    self.scene_filter.clear()
-    self.scene_filter.addItem("Todas",                    None)
-    self.scene_filter.addItem(" Interiores",            "interiores")
-    self.scene_filter.addItem("Exteriores",            "exteriores")
-    self.scene_filter.addItem(" Restaurantes",          "restaurantes")
-    self.scene_filter.addItem(" Eventos Sociales",      "eventos_sociales")
-    self.scene_filter.addItem(" Actividades Deportivas","actividades_deportivas")
+        Reemplaza el bloque de addItem existente en create_gallery_tab()
+        con esta lista:
+        """
+        # Reemplaza los addItem del scene_filter con estos:
+        self.scene_filter.clear()
+        self.scene_filter.addItem("Todas",                    None)
+        self.scene_filter.addItem(" Interiores",            "interiores")
+        self.scene_filter.addItem("Exteriores",            "exteriores")
+        self.scene_filter.addItem(" Restaurantes",          "restaurantes")
+        self.scene_filter.addItem(" Eventos Sociales",      "eventos_sociales")
+        self.scene_filter.addItem(" Actividades Deportivas","actividades_deportivas")
 
 
 
@@ -1068,27 +1021,27 @@ def update_scene_filter(self):
 
 # ==================== MÉTODOS AUXILIARES ====================
 
-def show_about(self):
-    """Muestra información de la aplicación"""
-    QMessageBox.about(
-        self,
-        "Acerca de PTITU",
-        "<h2>PTITU - Organizador de Fotografías</h2>"
-        "<p>Versión 1.0</p>"
-        "<p>Sistema de organización automática de colecciones fotográficas "
-        "mediante reconocimiento facial y análisis de metadatos.</p>"
-        "<p><b>Tecnologías:</b></p>"
-        "<ul>"
-        "<li>Python 3.10</li>"
-        "<li>PyQt5</li>"
-        "<li>TensorFlow + MTCNN</li>"
-        "<li>FaceNet</li>"
-        "<li>DBSCAN Clustering</li>"
-        "<li>ResNet50 para escenas</li>"
-        "</ul>"
-    )
+    def show_about(self):
+        """Muestra información de la aplicación"""
+        QMessageBox.about(
+            self,
+            "Acerca de PTITU",
+            "<h2>PTITU - Organizador de Fotografías</h2>"
+            "<p>Versión 1.0</p>"
+            "<p>Sistema de organización automática de colecciones fotográficas "
+            "mediante reconocimiento facial y análisis de metadatos.</p>"
+            "<p><b>Tecnologías:</b></p>"
+            "<ul>"
+            "<li>Python 3.10</li>"
+            "<li>PyQt5</li>"
+            "<li>TensorFlow + MTCNN</li>"
+            "<li>FaceNet</li>"
+            "<li>DBSCAN Clustering</li>"
+            "<li>ResNet50 para escenas</li>"
+            "</ul>"
+        )
 
-def closeEvent(self, event):
-    """Maneja el cierre de la aplicación"""
-    self.db.close()
-    event.accept()
+    def closeEvent(self, event):
+        """Maneja el cierre de la aplicación"""
+        self.db.close()
+        event.accept()
