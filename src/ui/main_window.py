@@ -250,6 +250,7 @@ class MainWindow(QMainWindow):
         
         # Filtro por escena
         filter_layout.addWidget(QLabel("Filtrar por escena:"))
+        self.scene_filter = QComboBox() 
         self.scene_filter.addItem("Todas", None)
         self.scene_filter.addItem("Interiores", "interiores")
         self.scene_filter.addItem("Exteriores", "exteriores")
@@ -934,21 +935,15 @@ class MainWindow(QMainWindow):
 
 
     def update_scene_filter(self):
-        """
-        Actualiza el combo de filtro de escenas en la galería con las
-        categorías actuales del proyecto.
 
-        Reemplaza el bloque de addItem existente en create_gallery_tab()
-        con esta lista:
-        """
         # Reemplaza los addItem del scene_filter con estos:
         self.scene_filter.clear()
         self.scene_filter.addItem("Todas",                    None)
-        self.scene_filter.addItem(" Interiores",            "interiores")
+        self.scene_filter.addItem("Interiores",            "interiores")
         self.scene_filter.addItem("Exteriores",            "exteriores")
-        self.scene_filter.addItem(" Restaurantes",          "restaurantes")
-        self.scene_filter.addItem(" Eventos Sociales",      "eventos_sociales")
-        self.scene_filter.addItem(" Actividades Deportivas","actividades_deportivas")
+        self.scene_filter.addItem("Restaurantes",          "restaurantes")
+        self.scene_filter.addItem("Eventos Sociales",      "eventos_sociales")
+        self.scene_filter.addItem("Actividades Deportivas", "actividades_deportivas")
 
 
 
