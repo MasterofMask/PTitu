@@ -41,5 +41,6 @@ data/test_photos/
 
 # Archivos del modelo entrenado
 data/dataset/
-data/models/*.pth
-data/models/training_history.json
+data/cache/
+data/photos.db
+data/*.db
