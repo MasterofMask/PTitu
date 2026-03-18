@@ -1107,22 +1107,60 @@ class MainWindow(QMainWindow):
 
     def export_by_scene(self):
         """Abre diálogo para seleccionar destino y exporta fotos por escena."""
-        from PyQt5.QtWidgets import QFileDialog, QMessageBox
-
-        # Verificar que hay fotos procesadas
-        stats = self.db.get_statistics()
-        scenes = stats.get('scenes_distribution', {})
-        total_classified = sum(scenes.values())
-
-        if total_classified == 0:
+ 
+        # 1. Verificar que hay fotos con escena clasificada
+        all_photos = self.db.get_all_photos()
+        if not all_photos:
             QMessageBox.warning(
-                self,
-                "Sin fotos clasificadas",
-                "No hay fotos clasificadas para exportar."
+                self, "Sin fotos",
+                "No hay fotos importadas para exportar."
             )
             return
-
-        # Rest of your method code here...
+ 
+        classified = sum(
+            1 for p in all_photos if self.db.get_scene(p['id']) is not None
+        )
+        unclassified = len(all_photos) - classified
+ 
+        # 2. Mostrar resumen previo y pedir confirmación
+        msg = (
+            f"Se exportarán {len(all_photos)} fotos organizadas por categoría de escena.\n\n"
+            f"  • Con categoría asignada : {classified}\n"
+            f"  • Sin categoría (Sin_Clasificar): {unclassified}\n\n"
+            f"Selecciona la carpeta destino en el siguiente diálogo."
+        )
+        reply = QMessageBox.question(
+            self, "Exportar por escena", msg,
+            QMessageBox.Ok | QMessageBox.Cancel,
+            QMessageBox.Ok
+        )
+        if reply != QMessageBox.Ok:
+            return
+ 
+        # 3. Diálogo de selección de carpeta destino
+        dest_str = QFileDialog.getExistingDirectory(
+            self,
+            "Selecciona la carpeta destino",
+            str(Path.home()),
+            QFileDialog.ShowDirsOnly | QFileDialog.DontResolveSymlinks
+        )
+        if not dest_str:
+            return  # usuario canceló
+ 
+        dest_path = Path(dest_str)
+ 
+        # 4. Verificar que la carpeta destino no sea la misma que el origen
+        # (previene copiar sobre sí mismo)
+        for photo in all_photos[:3]:
+            if Path(photo['file_path']).parent.resolve() == (dest_path / 'por_escena').resolve():
+                QMessageBox.warning(
+                    self, "Carpeta inválida",
+                    "La carpeta destino no puede ser la misma donde están las fotos originales."
+                )
+                return
+ 
+        # 5. Lanzar el worker de exportación en segundo plano
+        self._start_export(dest_path)
 
     def _start_export(self, dest_path):
         """Inicia el worker de exportación."""
