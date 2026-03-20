@@ -9,7 +9,6 @@ torch==2.0.1
 torchvision==0.15.2
 
 # Reconocimiento facial
-mtcnn==0.1.1
 facenet-pytorch==2.5.3
 
 # Clustering y análisis

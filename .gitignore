@@ -1,0 +1,57 @@
+# Entorno virtual
+venv/
+env/
+ENV/
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+*.pyd
+
+# PyInstaller (instalador/ejecutable generado) 
+dist/
+build/
+*.spec
+*.exe
+*.app
+ 
+# Base de datos
+*.db
+*.sqlite3
+data/database.db
+
+# Modelos preentrenados (muy pesados)
+data/models/*
+!data/models/.gitkeep
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Sistema operativo
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# Logs
+*.log
+
+# Datos de prueba (opcional)
+data/test_photos/
+
+# Archivos temporales
+*.tmp
+*.bak
+
+# Archivos del modelo entrenado
+data/dataset/
+data/cache/
+data/photos.db
+data/*.db
+
+
