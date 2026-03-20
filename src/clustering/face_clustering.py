@@ -182,28 +182,70 @@ class FaceClustering:
     #  Actualización en BD para clusters DBSCAN nuevos
     # ----------------------------------------------------------------
 
+    def _next_desconocido_name(self, db: DatabaseManager) -> str:
+        """
+        Genera el siguiente nombre disponible en la serie
+        'Desconocido', 'Desconocido 2', 'Desconocido 3', ...
+        """
+        persons = db.get_all_persons()
+        existing_names = {p.get('name') or '' for p in persons}
+
+        if 'Desconocido' not in existing_names:
+            return 'Desconocido'
+
+        n = 2
+        while True:
+            candidate = f'Desconocido {n}'
+            if candidate not in existing_names:
+                return candidate
+            n += 1
+
+    def _safe_max_cluster_id(self, db: DatabaseManager) -> int:
+        """
+        Calcula el cluster_id máximo existente de forma segura,
+        convirtiendo bytes corruptos antes de comparar.
+        """
+        conn = db.connect()
+        rows = conn.execute("SELECT cluster_id FROM persons").fetchall()
+        max_id = 9000
+        for r in rows:
+            try:
+                cid = r['cluster_id']
+                if isinstance(cid, (bytes, bytearray)):
+                    cid = int.from_bytes(cid[:4], 'little')
+                val = int(cid)
+                if val > max_id:
+                    max_id = val
+            except (TypeError, ValueError):
+                pass
+        return max_id
+
     def _update_database(self, db: DatabaseManager,
                          clusters: Dict[int, List[int]]):
-        """Crea personas nuevas (sin nombre) para los clusters DBSCAN."""
-        # Calcular offset para que cluster_id no colisione con los manuales
-        conn = db.connect()
-        row = conn.execute("SELECT MAX(cluster_id) as mx FROM persons").fetchone()
-        offset = int(row['mx'] or 0)
-        if offset < 9000:
-            offset = 9000
+        """
+        Crea personas nuevas con nombre 'Desconocido / Desconocido N'
+        para los clusters DBSCAN que no pudieron asignarse a nadie conocido.
+        El cluster_id siempre se guarda como int puro.
+        """
+        offset = self._safe_max_cluster_id(db)
 
         for cluster_label, face_ids in clusters.items():
             if cluster_label == -1:
                 logger.debug(f"Ruido DBSCAN: {len(face_ids)} rostro(s) sin asignar")
                 continue
 
-            new_cluster_id = offset + cluster_label + 1
-            person_id = db.insert_person(cluster_id=new_cluster_id)
+            # cluster_id como int puro para evitar que SQLite lo guarde como bytes
+            new_cluster_id = int(offset + cluster_label + 1)
+
+            # Nombre legible en lugar de "Persona XXXX"
+            auto_name = self._next_desconocido_name(db)
+
+            person_id = db.insert_person(cluster_id=new_cluster_id, name=auto_name)
             for fid in face_ids:
                 db.update_face_person(fid, person_id)
-            logger.debug(
-                f"Cluster {cluster_label} → Persona ID {person_id} "
-                f"({len(face_ids)} rostros)"
+            logger.info(
+                f"Cluster {cluster_label} → '{auto_name}' "
+                f"(ID {person_id}, {len(face_ids)} rostros)"
             )
 
     # ----------------------------------------------------------------

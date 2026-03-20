@@ -360,6 +360,11 @@ class DatabaseManager:
     # ----------------------------------------------------------------
 
     def insert_person(self, cluster_id: int, name: Optional[str] = None) -> int:
+        # Garantizar que cluster_id sea siempre un int puro (nunca bytes)
+        if isinstance(cluster_id, (bytes, bytearray)):
+            cluster_id = int.from_bytes(cluster_id[:4], 'little')
+        cluster_id = int(cluster_id)
+
         conn = self.connect()
         try:
             c = conn.execute(
