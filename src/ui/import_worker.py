@@ -69,11 +69,11 @@ class ImportWorker(QThread):
                 self.error.emit("No se encontraron imágenes en la carpeta")
                 return
 
-            total_files      = len(image_files)
-            imported         = 0   # fotos realmente nuevas
-            skipped          = 0   # duplicados ignorados
-            errors           = 0
-            total_faces      = 0
+            total_files       = len(image_files)
+            imported          = 0   # fotos realmente nuevas
+            skipped           = 0   # duplicados ignorados
+            errors            = 0
+            total_faces       = 0
             scenes_classified = 0
 
             self.status.emit(f"Procesando {total_files} imágenes...")
@@ -84,7 +84,7 @@ class ImportWorker(QThread):
                     self.status.emit("Importación cancelada por el usuario")
                     break
 
-                progress = int((i / total_files) * 90)
+                progress = int((i / total_files) * 85)
                 self.progress.emit(progress)
                 self.status.emit(
                     f"Procesando ({i + 1}/{total_files}): {image_file.name}"
@@ -108,7 +108,8 @@ class ImportWorker(QThread):
                     # Insertar en base de datos
                     photo_id = db.insert_photo(photo.to_dict())
 
-                    # insert_photo devuelve None si colisión inesperada
+                    # insert_photo devuelve el ID existente si hay colisión de hash
+                    # Verificamos si era una foto ya existente comparando con skipped
                     if photo_id is None:
                         skipped += 1
                         continue
@@ -155,18 +156,25 @@ class ImportWorker(QThread):
                     logger.error(msg)
                     continue
 
-            # ── Clustering facial (90-100 %) ────────────────────────
+            # ── Clustering facial (85-100 %) ────────────────────────
+            # CORREGIDO: siempre ejecutar cuando process_faces=True,
+            # sin importar si se encontraron rostros nuevos en esta
+            # importación. Esto garantiza que personas etiquetadas
+            # manualmente en sesiones anteriores sean reconocidas en
+            # las fotos recién importadas.
             n_persons = 0
-            if self.process_faces and total_faces > 0:
+            if self.process_faces:
                 self.status.emit("Agrupando personas detectadas...")
-                self.progress.emit(92)
+                self.progress.emit(90)
                 try:
                     from src.clustering.face_clustering import FaceClustering
                     clusterer  = FaceClustering()
                     clusterer.cluster_from_database(db)
                     stats_cl   = clusterer.get_cluster_statistics()
                     n_persons  = stats_cl['n_clusters']
-                    self.status.emit(f"✓ Identificadas {n_persons} persona(s)")
+                    self.status.emit(
+                        f"✓ Re-agrupación completada: {n_persons} persona(s)"
+                    )
                 except Exception as e:
                     logger.error(f"Error durante clustering: {e}")
 

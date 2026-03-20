@@ -12,10 +12,8 @@ import cv2
 from PIL import Image
 import torch
 
-# Importar MTCNN (versión mtcnn package, no facenet-pytorch)
-from mtcnn import MTCNN as MTCNN_Detector
-
-# Importar FaceNet de facenet-pytorch
+# MTCNN y FaceNet ambos de facenet-pytorch (sin dependencia de TensorFlow)
+from facenet_pytorch import MTCNN as MTCNN_Detector
 from facenet_pytorch import InceptionResnetV1
 
 from src.core.config import (
@@ -47,10 +45,16 @@ class FaceProcessor:
         self.device = torch.device('cpu')
         logger.info(f"Usando dispositivo: {self.device}")
 
-        # ── Inicializar detector MTCNN ──────────────────────────────
+        # ── Inicializar detector MTCNN (facenet-pytorch, sin TensorFlow) ──
         try:
-            self.detector = MTCNN_Detector()
-            logger.info("MTCNN inicializado correctamente")
+            # keep_all=True para detectar MÚLTIPLES rostros por imagen
+            # post_process=False para obtener tensores sin normalización adicional
+            self.detector = MTCNN_Detector(
+                keep_all=True,
+                device=self.device,
+                post_process=False,
+            )
+            logger.info("MTCNN (facenet-pytorch) inicializado correctamente")
         except Exception as e:
             logger.error(f"Error inicializando MTCNN: {e}")
             raise
@@ -147,51 +151,71 @@ class FaceProcessor:
 
     def _detect_all_faces(self, image: Image.Image) -> List[Dict[str, Any]]:
         """
-        Detecta TODOS los rostros en una imagen PIL usando MTCNN.
+        Detecta TODOS los rostros en una imagen PIL usando MTCNN de facenet-pytorch.
 
-        MTCNN retorna una lista con cada rostro detectado; este método
-        filtra por umbral de confianza y normaliza las coordenadas.
+        facenet_pytorch.MTCNN devuelve (boxes, probs, landmarks) donde:
+          - boxes: tensor [N, 4] con coordenadas [x1, y1, x2, y2]
+          - probs: tensor [N] con confianzas
+          - landmarks: tensor [N, 5, 2] con puntos clave
+
+        Este método convierte el resultado al formato interno
+        {box: [x, y, w, h], confidence, keypoints} para mantener
+        compatibilidad con el resto del código.
 
         Args:
             image: Imagen PIL en modo RGB
 
         Returns:
-            Lista de rostros (pueden ser 0 o más)
+            Lista de rostros normalizados (0 o más)
         """
         try:
-            img_array = np.array(image)  # MTCNN espera RGB uint8
+            # detect() devuelve (boxes, probs, landmarks)
+            boxes, probs, landmarks = self.detector.detect(image, landmarks=True)
 
-            detections = self.detector.detect_faces(img_array)
-
-            if not detections:
+            if boxes is None or len(boxes) == 0:
                 return []
 
             faces = []
-            for det in detections:
-                confidence = det.get('confidence', 0.0)
+            img_w, img_h = image.size
+
+            for i, (box, prob) in enumerate(zip(boxes, probs)):
+                confidence = float(prob) if prob is not None else 0.0
 
                 if confidence < FACE_CONFIDENCE_THRESHOLD:
                     logger.debug(
-                        f"Rostro descartado por baja confianza: {confidence:.3f} "
+                        f"Rostro descartado: confianza {confidence:.3f} "
                         f"< {FACE_CONFIDENCE_THRESHOLD}"
                     )
                     continue
 
-                # MTCNN devuelve [x, y, width, height]
-                x, y, w, h = det['box']
-                x = max(0, x)
-                y = max(0, y)
-                w = max(1, w)
-                h = max(1, h)
+                # facenet_pytorch devuelve [x1, y1, x2, y2]
+                # Convertir a [x, y, width, height]
+                x1, y1, x2, y2 = [float(v) for v in box]
+                x = max(0, int(x1))
+                y = max(0, int(y1))
+                w = max(1, int(x2 - x1))
+                h = max(1, int(y2 - y1))
+
+                # Convertir landmarks si existen
+                kp = {}
+                if landmarks is not None and i < len(landmarks):
+                    lm = landmarks[i]
+                    kp = {
+                        'left_eye':    (int(lm[0][0]), int(lm[0][1])),
+                        'right_eye':   (int(lm[1][0]), int(lm[1][1])),
+                        'nose':        (int(lm[2][0]), int(lm[2][1])),
+                        'mouth_left':  (int(lm[3][0]), int(lm[3][1])),
+                        'mouth_right': (int(lm[4][0]), int(lm[4][1])),
+                    }
 
                 faces.append({
                     'box':        [x, y, w, h],
                     'confidence': confidence,
-                    'keypoints':  det.get('keypoints', {}),
+                    'keypoints':  kp,
                 })
 
             logger.info(
-                f"MTCNN: {len(detections)} detectados, "
+                f"MTCNN: {len(boxes)} detectados, "
                 f"{len(faces)} sobre umbral {FACE_CONFIDENCE_THRESHOLD}"
             )
             return faces

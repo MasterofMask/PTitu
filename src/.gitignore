@@ -9,7 +9,15 @@ __pycache__/
 *$py.class
 *.so
 .Python
+*.pyd
 
+# PyInstaller (instalador/ejecutable generado) 
+dist/
+build/
+*.spec
+*.exe
+*.app
+ 
 # Base de datos
 *.db
 *.sqlite3
@@ -28,6 +36,7 @@ data/models/*
 # Sistema operativo
 .DS_Store
 Thumbs.db
+desktop.ini
 
 # Logs
 *.log
@@ -44,3 +53,5 @@ data/dataset/
 data/cache/
 data/photos.db
 data/*.db
+
+

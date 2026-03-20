@@ -22,6 +22,24 @@ logger = logging.getLogger(__name__)
 MANUAL_LABEL_THRESHOLD = 0.45
 
 
+def _is_auto_name(name: str) -> bool:
+    """
+    Devuelve True si el nombre fue asignado automáticamente por el sistema
+    y NO debe usarse como semilla de identidad real.
+
+    Nombres automáticos: 'Desconocido', 'Desconocido 2', 'Desconocido 3', ...
+    Nombres manuales: cualquier otro texto escrito por el usuario.
+    """
+    if not name:
+        return True
+    if name == 'Desconocido':
+        return True
+    parts = name.split(' ')
+    if len(parts) == 2 and parts[0] == 'Desconocido' and parts[1].isdigit():
+        return True
+    return False
+
+
 class FaceClustering:
     """
     Clustering facial basado en DBSCAN con soporte de etiquetas manuales.
@@ -32,7 +50,7 @@ class FaceClustering:
       3. Para cada rostro sin etiquetar, calcula distancia coseno a cada
          centroide. Si está dentro del umbral, asigna a esa persona.
       4. Los rostros restantes pasan por DBSCAN para formar grupos nuevos.
-      5. Los nuevos clusters reciben person_id nuevos (sin nombre).
+      5. Los nuevos clusters reciben person_id nuevos con nombre "Desconocido N".
     """
 
     def __init__(self,
@@ -53,22 +71,34 @@ class FaceClustering:
         """
         Ejecuta clustering completo respetando etiquetas manuales.
 
+        Pasos:
+          1. Obtiene todos los embeddings de la BD.
+          2. Separa los rostros con persona nombrada (etiqueta manual)
+             de los que no tienen asignación o tienen persona sin nombre.
+          3. Calcula el centroide real por persona nombrada usando TODOS
+             sus embeddings.
+          4. Intenta asignar cada rostro sin etiquetar a una persona conocida
+             por similitud coseno.
+          5. Los que no encajan pasan por DBSCAN para crear grupos nuevos.
+
         Args:
             db: Gestor de base de datos
 
         Returns:
-            Diccionario {cluster_id: [face_ids]}
+            Diccionario {cluster_label_dbscan: [face_ids]}
         """
         all_data = db.get_all_face_embeddings()
         if not all_data:
             logger.warning("No hay rostros en la base de datos")
             return {}
 
-        # ── 1. Separar etiquetados y sin etiquetar ───────────────────
         conn = db.connect()
-        labeled_faces = {}    # person_id → [(face_id, embedding)]
-        unlabeled = []        # [(face_id, embedding)]
 
+        # ── 1. Clasificar rostros en etiquetados / sin etiquetar ──────
+        labeled_embeddings: Dict[int, List[np.ndarray]] = {}   # person_id → [emb, ...]
+        unlabeled: List[Tuple[int, np.ndarray]] = []           # [(face_id, emb), ...]
+
+        needs_commit = False
         for face_id, embedding in all_data:
             row = conn.execute(
                 "SELECT person_id FROM faces WHERE id = ?", (face_id,)
@@ -76,30 +106,56 @@ class FaceClustering:
             pid = row['person_id'] if row else None
 
             if pid is not None:
-                # Verificar que la persona tiene nombre (etiquetada manualmente)
                 person = db.get_person_by_id(pid)
-                if person and person.get('name'):
-                    labeled_faces.setdefault(pid, []).append((face_id, embedding))
+                name = person.get('name') if person else None
+
+                # Solo es semilla si tiene nombre MANUAL (no "Desconocido N")
+                if name and not _is_auto_name(name):
+                    labeled_embeddings.setdefault(pid, []).append(embedding)
                     continue
+
+                # Si era "Desconocido N", desvincular para permitir reasignación
+                if name and _is_auto_name(name):
+                    conn.execute(
+                        "UPDATE faces SET person_id = NULL WHERE id = ?",
+                        (face_id,)
+                    )
+                    needs_commit = True
+
             unlabeled.append((face_id, embedding))
 
+        if needs_commit:
+            conn.commit()
+
+        n_labeled = sum(len(v) for v in labeled_embeddings.values())
         logger.info(
-            f"Rostros etiquetados: {sum(len(v) for v in labeled_faces.values())}, "
+            f"Rostros etiquetados (semilla): {n_labeled}, "
             f"sin etiquetar: {len(unlabeled)}"
         )
 
-        # ── 2. Centroides por persona etiquetada ─────────────────────
-        centroids: Dict[int, np.ndarray] = {}
-        for pid, items in labeled_faces.items():
-            embs = np.array([e for _, e in items])
-            centroids[pid] = embs.mean(axis=0)
+        if not unlabeled:
+            logger.info("Todos los rostros ya están etiquetados, nada que hacer.")
+            return {}
 
-        # ── 3. Asignar rostros sin etiquetar a personas conocidas ─────
-        still_unlabeled = []
+        # ── 2. Calcular centroides reales por persona ─────────────────
+        # BUG ORIGINAL: el denominador usaba una variable externa que no
+        # crecía correctamente. Aquí usamos np.mean sobre todos los embeddings.
+        centroids: Dict[int, np.ndarray] = {
+            pid: np.mean(embs, axis=0)
+            for pid, embs in labeled_embeddings.items()
+        }
+        # Conteo mutable para actualización online del centroide
+        centroid_counts: Dict[int, int] = {
+            pid: len(embs) for pid, embs in labeled_embeddings.items()
+        }
+
+        # ── 3. Asignar rostros sin etiquetar a personas conocidas ──────
+        still_unlabeled: List[Tuple[int, np.ndarray]] = []
         assigned_to_known = 0
 
         for face_id, embedding in unlabeled:
             best_pid, best_dist = None, float('inf')
+
             for pid, centroid in centroids.items():
                 dist = cosine(embedding, centroid)
                 if dist < best_dist:
@@ -108,11 +164,16 @@ class FaceClustering:
 
             if best_pid is not None and best_dist <= MANUAL_LABEL_THRESHOLD:
                 db.update_face_person(face_id, best_pid)
-                # Actualizar centroide con este embedding nuevo
-                old = centroids[best_pid]
-                n = len(labeled_faces[best_pid]) + assigned_to_known + 1
-                centroids[best_pid] = old + (embedding - old) / n
+
+                # Actualizar centroide online de forma correcta
+                n = centroid_counts[best_pid]
+                centroids[best_pid] = (centroids[best_pid] * n + embedding) / (n + 1)
+                centroid_counts[best_pid] = n + 1
+
                 assigned_to_known += 1
+                logger.debug(
+                    f"Rostro {face_id} → persona {best_pid} (dist={best_dist:.3f})"
+                )
             else:
                 still_unlabeled.append((face_id, embedding))
 
@@ -121,13 +182,16 @@ class FaceClustering:
             f"aún sin etiquetar: {len(still_unlabeled)}"
         )
 
-        # ── 4. DBSCAN sobre los rostros restantes ─────────────────────
+        # ── 4. DBSCAN sobre rostros que no encajaron ──────────────────
         clusters: Dict[int, List[int]] = {}
         if still_unlabeled:
             face_ids_u = [fid for fid, _ in still_unlabeled]
             embeddings_u = [emb for _, emb in still_unlabeled]
             clusters = self.cluster_faces(embeddings_u, face_ids_u)
             self._update_database(db, clusters)
+
+        # ── 5. Limpiar personas "Desconocido N" que quedaron vacías ───
+        self._cleanup_empty_auto_persons(db)
 
         return clusters
 
@@ -182,6 +246,24 @@ class FaceClustering:
     #  Actualización en BD para clusters DBSCAN nuevos
     # ----------------------------------------------------------------
 
+    def _cleanup_empty_auto_persons(self, db: DatabaseManager):
+        """
+        Elimina personas con nombre automático ('Desconocido N') que
+        quedaron sin ningún rostro asignado tras la reasignación.
+        Evita acumulación de registros basura en la tabla de personas.
+        """
+        conn = db.connect()
+        persons = db.get_all_persons()
+        deleted = 0
+        for p in persons:
+            name = p.get('name') or ''
+            if _is_auto_name(name) and p.get('photo_count', 0) == 0:
+                conn.execute("DELETE FROM persons WHERE id = ?", (p['id'],))
+                deleted += 1
+        if deleted:
+            conn.commit()
+            logger.info(f"Eliminadas {deleted} persona(s) automáticas vacías")
+
     def _next_desconocido_name(self, db: DatabaseManager) -> str:
         """
         Genera el siguiente nombre disponible en la serie
@@ -234,10 +316,7 @@ class FaceClustering:
                 logger.debug(f"Ruido DBSCAN: {len(face_ids)} rostro(s) sin asignar")
                 continue
 
-            # cluster_id como int puro para evitar que SQLite lo guarde como bytes
             new_cluster_id = int(offset + cluster_label + 1)
-
-            # Nombre legible en lugar de "Persona XXXX"
             auto_name = self._next_desconocido_name(db)
 
             person_id = db.insert_person(cluster_id=new_cluster_id, name=auto_name)

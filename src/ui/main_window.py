@@ -35,7 +35,7 @@ _ICONS_DIR = Path(__file__).parent / "icons"
 
 # Mapeo nombre → archivo SVG de Feather Icons
 _ICON_FILES = {
-    'import':  'download-cloud.svg',
+    'import':  'download.svg',
     'gallery': 'image.svg',
     'persons': 'users.svg',
     'export':  'upload-cloud.svg',
@@ -241,16 +241,41 @@ class FaceLabelingDialog(QDialog):
             name = combo.currentText().strip()
             if not name:
                 continue
-            existing = next((p for p in self.db.get_all_persons() if p.get('name') == name), None)
+            existing = next(
+                (p for p in self.db.get_all_persons() if p.get('name') == name),
+                None
+            )
             if existing:
                 person_id = existing['id']
             else:
-                person_id = self.db.insert_person(cluster_id=self._next_cluster_id(), name=name)
+                person_id = self.db.insert_person(
+                    cluster_id=self._next_cluster_id(), name=name
+                )
             self.db.update_face_person(face_id, person_id)
             saved += 1
-
+ 
         if saved:
-            QMessageBox.information(self, "Guardado", f"✓ {saved} etiqueta(s) guardada(s).")
+            # ── Re-clustering automático tras etiquetado manual ──────
+            recluster_msg = ""
+            try:
+                from src.clustering.face_clustering import FaceClustering
+                clusterer = FaceClustering()
+                clusterer.cluster_from_database(self.db)
+                stats = clusterer.get_cluster_statistics()
+                # n_total incluye solo los que pasaron por DBSCAN en esta
+                # corrida; los asignados a personas conocidas se reportan
+                # indirectamente.
+                recluster_msg = (
+                    f"\\n✓ Re-agrupación automática completada."
+                )
+            except Exception as e:
+                recluster_msg = f"\\n⚠ Re-agrupación no completada: {e}"
+ 
+            QMessageBox.information(
+                self,
+                "Guardado",
+                f"✓ {saved} etiqueta(s) guardada(s).{recluster_msg}"
+            )
             self.accept()
         else:
             self.reject()
@@ -860,21 +885,28 @@ class MainWindow(QMainWindow):
     def label_faces_for_selected_photo(self):
         current = self.photo_list.currentItem() if hasattr(self, 'photo_list') else None
         if not current:
-            QMessageBox.information(self, "Selecciona una foto",
-                                    "Ve a la pestaña Galería, selecciona una foto\n"
-                                    "y luego pulsa este botón.")
+            QMessageBox.information(
+                self, "Selecciona una foto",
+                "Ve a la pestaña Galería, selecciona una foto\\n"
+                "y luego pulsa este botón."
+            )
             return
         photo_id = current.data(Qt.UserRole)
         faces = self.db.get_faces_by_photo(photo_id)
         if not faces:
-            QMessageBox.information(self, "Sin rostros",
-                                    "No se detectaron rostros en esta fotografía.")
+            QMessageBox.information(
+                self, "Sin rostros",
+                "No se detectaron rostros en esta fotografía."
+            )
             return
         dlg = FaceLabelingDialog(photo_id, self.db, parent=self)
         if dlg.exec_() == QDialog.Accepted:
             self.load_persons()
+            self.load_gallery()       # <-- refrescar galería también
             self.load_statistics()
-            self.status_bar.showMessage("Etiquetas guardadas")
+            self.status_bar.showMessage(
+                "Etiquetas guardadas — re-agrupación completada"
+            )
 
     # ── Importación ───────────────────────────────────────────────────────────
 
