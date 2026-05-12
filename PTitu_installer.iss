@@ -107,7 +107,7 @@ Name: "readme";     Description: "Incluir instrucciones de uso (README)"; Types:
 ; ── Archivos a instalar ───────────────────────────────────────────────────
 [Files]
 ; Ejecutable principal y todas sus dependencias (carpeta dist\PTitu\)
-Source: "dist\PTitu\*";               DestDir: "{app}";              \
+Source: "dist\organizador\*";               DestDir: "{app}";              \
         Flags: ignoreversion recursesubdirs createallsubdirs;        \
         Components: main
 

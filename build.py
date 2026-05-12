@@ -238,9 +238,9 @@ def step_pyinstaller():
 def step_inno():
     print("\n─── Generando instalador con Inno Setup ───")
 
-    # Verificar dist/PTitu/
-    if not (ROOT / "dist/PTitu").exists():
-        print("  ✗ dist/PTitu/ no existe.")
+    # Verificar dist/organizador/
+    if not (ROOT / "dist/organizador").exists():
+        print("  ✗ dist/organizador/ no existe.")
         print("    Ejecuta primero:  python build.py --only-exe")
         sys.exit(1)
 
