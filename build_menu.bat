@@ -7,8 +7,8 @@ echo    PTitu — Compilador de Instalador
 echo    Universidad Autónoma de Ciudad Juárez
 echo ============================================================
 echo.
-echo    Herramienta: Inno Setup 6 (open source, gratuito)
-echo    Descarga si no lo tienes: https://jrsoftware.org/isinfo.php
+echo    Herramienta: Inno Setup 6 (open source)
+echo  
 echo.
 echo ─────────────────────────────────────────────────────────────
 echo    [1]  Verificar prerrequisitos

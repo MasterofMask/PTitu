@@ -1,0 +1,7 @@
+PTitu - Organizador de Fotografías
+Universidad Autónoma de Ciudad Juárez
+Ciudad Juárez, Chihuahua, México
+
+Proyecto de tesis de licenciatura en Ingeniería en Sistemas Computacionales.
+Este software se distribuye únicamente con fines académicos.
+Todos los derechos reservados © 2025 UACJ.
